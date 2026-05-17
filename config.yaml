@@ -1,0 +1,14 @@
+# Model Architecture
+n_layer: 6
+n_head: 6
+n_embd: 384
+block_size: 64    # Maximum sequence length (max neurons per INR)
+bias: false
+dropout: 0.1
+
+# Training Settings
+batch_size: 32
+learning_rate: 0.0006  # 6e-4 is standard for nanoGPT base
+max_epochs: 5
+log_interval: 10
+checkpoint_dir: "checkpoints"

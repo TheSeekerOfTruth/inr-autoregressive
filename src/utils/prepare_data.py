@@ -1,0 +1,113 @@
+import os
+import torch
+from tqdm import tqdm
+from pathlib import Path
+from typing import List, Dict, Any, Union
+from src.tokenizer import INRTokenizer
+
+class INRDataProcessor:
+    def __init__(
+        self, 
+        input_root: str = "data/mnist-inrs", 
+        output_root: str = "data/processed_inrs", 
+        digitization_levels: int = 100
+    ):
+        self.input_root = Path(input_root)
+        self.output_root = Path(output_root)
+        self.levels = digitization_levels
+        self.tokenizer =    INRTokenizer()
+
+    def discretize(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Applies rounding to fixed levels."""
+        return torch.round(tensor * self.levels) / self.levels
+
+    def _process_single_file(self, file_path: Path, destination: Path):
+        """Standard Forward: .pth -> .pt (flattened & digitized)"""
+        try:
+            state_dict = torch.load(file_path, map_location='cpu')
+            tokenized_layers = self.tokenizer.tokenize(state_dict)
+
+            flattened_neurons = []
+            layer_ids = []
+
+            for l_idx, layer in enumerate(tokenized_layers):
+                for neuron in layer:
+                    digitized_neuron = self.discretize(neuron)
+                    flattened_neurons.append(digitized_neuron)
+                    layer_ids.append(l_idx)
+
+            save_name = file_path.parent.parent.name + ".pt"
+            torch.save({
+                'neurons': flattened_neurons, 
+                'layer_ids': torch.tensor(layer_ids, dtype=torch.long)
+            }, destination / save_name)
+        except Exception as e:
+            print(f"Error processing {file_path.name}: {e}")
+
+    def get_reconstruction_tensors(self, pt_path, device='cpu'):
+        """
+        Loads a processed .pt file and returns (weights, biases) 
+        formatted specifically for the functional BatchSiren forward pass.
+        """
+        data = torch.load(pt_path, map_location=device)
+        neurons = data['neurons']
+        layer_ids = data['layer_ids']
+
+        unique_layers = torch.unique(layer_ids).tolist()
+        
+        reconstructed_weights = []
+        reconstructed_biases = []
+
+        for l_id in unique_layers:
+            indices = (layer_ids == l_id).nonzero(as_tuple=True)[0] 
+            layer_matrix = torch.stack([neurons[i] for i in indices])
+            w = layer_matrix[:, :-1].unsqueeze(0) 
+            b = layer_matrix[:, -1].unsqueeze(0)
+            reconstructed_weights.append(w.to(device))
+            reconstructed_biases.append(b.to(device))
+            
+        return reconstructed_weights, reconstructed_biases
+    
+    def reconstruct_state_dict(self, processed_path: Union[str, Path]) -> Dict[str, torch.Tensor]:
+        """
+        Takes a processed .pt file and converts it back into a 
+        standard model state_dict (weights and biases).
+        """
+        data = torch.load(processed_path, map_location='cpu')
+        neurons = data['neurons']
+        layer_ids = data['layer_ids']
+
+        unique_layers = torch.unique(layer_ids).tolist()
+        layers_reconstructed = []
+        
+        for l_id in unique_layers:
+            layer_neurons = [neurons[i] for i, val in enumerate(layer_ids) if val == l_id]
+            layers_reconstructed.append(layer_neurons)
+
+        state_dict = self.tokenizer.detokenize(layers_reconstructed)       
+        return state_dict
+
+    def save_reconstructed_pth(self, processed_path: str, output_path: str):
+        """
+        Helper to convert a GPT-ready .pt file back into a .pth checkpoint 
+        ready for the BatchSiren model.
+        """
+        state_dict = self.reconstruct_state_dict(processed_path)
+        torch.save(state_dict, output_path)
+        print(f"Successfully reconstructed checkpoint to: {output_path}")
+
+
+    def run(self):
+        """Process all train/test files."""
+        for split in ["training", "testing"]:
+            src = self.input_root / split
+            dst = self.output_root / split
+            if not src.exists(): continue
+            dst.mkdir(parents=True, exist_ok=True)
+            files = list(src.rglob("*.pth"))
+            for f in tqdm(files, desc=f"Processing {split}"):
+                self._process_single_file(f, dst)
+
+if __name__ == "__main__":
+    processor = INRDataProcessor()
+    processor.run()
