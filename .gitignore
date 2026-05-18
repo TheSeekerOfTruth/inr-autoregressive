@@ -1,5 +1,7 @@
 .vscode/
 __pycache__/
 *.py[cod]
-/data/
+*/data/mnist-inrs/*
 /external/
+.venv/
+venv/
