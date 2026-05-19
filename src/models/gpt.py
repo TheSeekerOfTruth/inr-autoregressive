@@ -12,6 +12,7 @@ class CausalSelfAttention(nn.Module):
         self.resid_dropout = nn.Dropout(config.dropout)
         self.n_head = config.n_head
         self.n_embd = config.n_embd
+        self.dropout = config.dropout
 
     def forward(self, x):
         B, T, C = x.size()
@@ -21,7 +22,7 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
 
         # PyTorch 2.0+ Flash Attention execution
-        y = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.config.dropout if self.training else 0, is_causal=True)
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
         
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.resid_dropout(self.c_proj(y))
@@ -62,7 +63,7 @@ class INRGPT(nn.Module):
 
         self.transformer = nn.ModuleDict(dict(
             layer_embeddings = nn.Embedding(config.num_layers, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
+            wpe = nn.Embedding(64, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = nn.LayerNorm(config.n_embd, bias=config.bias),
@@ -73,10 +74,11 @@ class INRGPT(nn.Module):
         self.layer_1_decoder = nn.Linear(config.n_embd, 33)
         self.layer_2_decoder = nn.Linear(config.n_embd, 33)
 
-    def forward(self, flat_x, layer_ids):
-        # flat_x shape: (B * T, 33) 
+    def forward(self, flat_x, layer_ids, target_layer_ids):
+        # flat_x shape: (B , T, 33) 
         # layer_ids shape: (B, T)
         B, T = layer_ids.size()
+        flat_x = flat_x.view(B * T, -1)
         
         # 1. Flatten layer IDs to match the length of flat_x -> Shape: (B * T)
         flat_layers = layer_ids.view(-1) 
@@ -99,7 +101,7 @@ class INRGPT(nn.Module):
             neuron_emb[mask_1] = self.layer_1_encoder(flat_x[mask_1])
 
         if mask_2.any():
-            neuron_emb[mask_1] = self.layer_2_encoder(flat_x[mask_2])    
+            neuron_emb[mask_2] = self.layer_2_encoder(flat_x[mask_2])    
             
         # 5. Reshape back to standard 3D Transformer Layout
         neuron_emb = neuron_emb.view(B, T, self.config.n_embd) # Shape: (B, T, 384)
@@ -112,5 +114,29 @@ class INRGPT(nn.Module):
         
         for block in self.transformer.h:
             x = block(x)
+        hidden_states = self.transformer.ln_f(x)
+
+        flat_decode_layers = target_layer_ids.view(-1)
+        flat_hidden = hidden_states.view(B * T, -1)
+        
+        # Pre-allocate output logit grid (Width 33 to seamlessly match your padded dataset target)
+        logits = torch.zeros(B * T, 33, device=flat_x.device)
+        
+        # Create output boolean masks
+        out_mask_0 = (flat_decode_layers == 0)
+        out_mask_1 = (flat_decode_layers == 1)
+        out_mask_2 = (flat_decode_layers == 2)
+        
+        if out_mask_0.any():
+            # Layer 0 decoder yields size 3. We pad the remaining 30 columns with zeros to match width 33
+            raw_preds = self.layer_0_decoder(flat_hidden[out_mask_0])
+            logits[out_mask_0] = F.pad(raw_preds, (0, 30))
             
-        return self.transformer.ln_f(x)
+        if out_mask_1.any():
+            logits[out_mask_1] = self.layer_1_decoder(flat_hidden[out_mask_1])
+            
+        if out_mask_2.any():
+            logits[out_mask_2] = self.layer_2_decoder(flat_hidden[out_mask_2])
+            
+        # Reshape logits back to match your dataset target shape: (B, T, 33)
+        return logits.view(B, T, 33)

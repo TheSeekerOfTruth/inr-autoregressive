@@ -2,15 +2,35 @@ import os
 import yaml
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from src.data.dataset import INRDataset, inr_collate_fn
+from torch.utils.data import DataLoader, random_split
+from torch.utils.tensorboard import SummaryWriter
+from src.data.dataset import INRDataset
 from src.models.gpt import INRGPT
 
-# A clean object wrapper for your YAML configuration dictionary
 class YamlConfig:
     def __init__(self, config_dict):
         for key, value in config_dict.items():
             setattr(self, key, value)
+
+def evaluate_sub_loss(model, val_loader, device):
+    model.eval()
+    total_val_loss = 0.0
+    actual_batches = 0
+    
+    with torch.no_grad():
+        for i, batch in enumerate(val_loader):
+            x_neurons = batch['x_neurons'].to(device)
+            layer_ids = batch['layer_ids'].to(device)
+            target_layer_ids = batch['target_layer_ids'].to(device)
+            y_neurons = batch['y_neurons'].to(device)
+            
+            predictions = model(x_neurons, layer_ids, target_layer_ids)
+            loss = F.mse_loss(predictions, y_neurons)
+            
+            total_val_loss += loss.item()
+            actual_batches += 1
+    model.train() 
+    return total_val_loss / max(actual_batches, 1)
 
 def main():
     # 1. Load configuration from YAML file
@@ -22,120 +42,117 @@ def main():
         config_data = yaml.safe_load(f)
     config = YamlConfig(config_data)
     
-    # 2. Set up device and hardware optimization flags
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"Using tracking device: {device}")
+    # Set up directories
+    os.makedirs(config.checkpoint_dir, exist_ok=True)
+    # 2. Initialize TensorBoard Writer
+    # This creates a 'runs/' directory automatically
+    writer = SummaryWriter(log_dir="runs/inr_gpt_experiment")
     
-    # Enable TensorFloat-32 calculations on Ampere/Ada GPUs for faster matrix operations
+    # 2. Hardware acceleration setups
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Using device: {device}")
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision('high')
 
-    # 3. Initialize Dataset and Dataloader
-    print("Loading data partitions...")
-    train_dataset = INRDataset(folder_path="data/processed_inrs", split='train')
+    # 3. Load Dataset & Create Train/Validation Splits
+    print("Loading data and configuring splits...")
+    full_dataset = INRDataset(folder_path="data/processed_inrs_1", split='train')
+    
+    # Automatically allocate 90% for training and 10% for tracking validation loss
+    # train_size = int(0.9 * len(full_dataset))
+    train_size = 1 
+    val_size = len(full_dataset) - train_size
+    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+    
     train_loader = DataLoader(
-        train_dataset, 
-        batch_size=config.batch_size, 
-        shuffle=True, 
-        collate_fn=inr_collate_fn,
-        pin_memory=(device == 'cuda') # Speeds up CPU-to-GPU data transfer
+        train_dataset, batch_size=config.batch_size, shuffle=True, pin_memory=(device == 'cuda')
     )
+    #val_loader = DataLoader(
+    #    val_dataset, batch_size=config.batch_size, shuffle=False, pin_memory=(device == 'cuda')
+    #)
 
-    # 4. Initialize Model and Optimization Ecosystem
+    # 4. Initialize Model and Optimizer
     print("Initializing INRGPT engine...")
     model = INRGPT(config).to(device)
     
-    # Count parameters just to keep a pulse on the model scale
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model parameters tracked: {num_params:,}")
 
     optimizer = torch.optim.AdamW(
-        model.parameters(), 
-        lr=config.learning_rate, 
-        beta1=0.9, 
-        beta2=0.95, 
-        weight_decay=0.1
+        model.parameters(), lr=config.learning_rate, 
+        betas=(0.9, 0.95), weight_decay=0.1
     )
 
-    # Create a clean folder directory for saving weights checkpoints
-    os.makedirs(config.checkpoint_dir, exist_ok=True)
+    # Dictionary history tracker for our visual Jupyter Notebook dashboard
+    history_logs = []
 
     # 5. Core Execution Loop
     print("Beginning model training execution...")
-    model.train()
-    
+    global_step = 0
+
     for epoch in range(config.max_epochs):
-        running_loss = 0.0
-        steps_in_epoch = 0
+        # --- TRAINING PHASE ---
+        model.train()
+        running_train_loss = 0.0
+        train_steps = 0
         
-        for step, batch in enumerate(train_loader):
+        for _, batch in enumerate(train_loader):
             optimizer.zero_grad(set_to_none=True)
             
-            # Extract sequence inputs and move metadata metrics to the target hardware device
-            batch_x_neurons = batch['x_neurons']
+            # Move everything cleanly to the active hardware device
+            x_neurons = batch['x_neurons'].to(device)
             layer_ids = batch['layer_ids'].to(device)
+            target_layer_ids = batch['target_layer_ids'].to(device)
+            y_neurons = batch['y_neurons'].to(device)
             
-            # Step A: Run the unpadded forward representation pass
-            # Returns hidden states of shape: (Batch, Sequence_Length, n_embd)
-            hidden_states = model(batch_x_neurons, layer_ids)
+            predictions = model(x_neurons, layer_ids, target_layer_ids)
             
-            # Extract layout metadata rules and targets required for the custom decoder evaluation
-            target_layer_ids = batch['target_layer_ids']
-            batch_y_neurons = batch['y_neurons']
+            loss = F.mse_loss(predictions, y_neurons)
             
-            B, T, _ = hidden_states.size()
-            loss = 0.0
-            total_elements = 0
-            
-            # Step B: Iterate dynamically over unpadded batches to process non-uniform vectors
-            for b in range(B):
-                for t in range(T):
-                    pred_vector = hidden_states[b, t]
-                    target_vector = batch_y_neurons[b][t].to(device)
-                    target_l_id = target_layer_ids[b, t].item()
-
-                    # Direct the uniform 384-dim prediction to the correct dimensional down-sampler
-                    if target_l_id == 0:
-                        logits = model.layer_0_decoder(pred_vector)   # Evaluates shapes of 3
-                    else:
-                        logits = model.layer_1_2_decoder(pred_vector) # Evaluates shapes of 33
-                    
-                    # Accumulate sums of absolute squared errors across varying dimensions
-                    loss += F.mse_loss(logits, target_vector, reduction='sum')
-                    total_elements += target_vector.numel()
-
-            # Normalize the batch loss across the exact element count to protect scales
-            if total_elements > 0:
-                loss = loss / total_elements
-            
-            # Step C: Backpropagation & Optimization steps
             loss.backward()
-            
-            # Clip gradients at 1.0 to prevent the mathematical explosion of variance steps
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
             optimizer.step()
             
-            # Statistics Tracking
-            running_loss += loss.item()
-            steps_in_epoch += 1
+            running_train_loss += loss.item()
+            train_steps += 1
             
-            if step % config.log_interval == 0:
-                print(f"Epoch {epoch+1}/{config.max_epochs} | Step {step} | Batch MSE Loss: {loss.item():.6f}")
+            if global_step % config.log_interval == 0:
+                #current_val_loss = evaluate_sub_loss(model, val_loader, device)
+                writer.add_scalars("Loss/Batch_Step", {
+                    "Train": loss.item(),
+                    #"Validation": current_val_loss
+                }, global_step)
+            global_step += 1
 
-        # Step D: Save a model state check-point at the conclusion of every completed epoch
-        epoch_avg_loss = running_loss / steps_in_epoch
-        print(f"--- Epoch {epoch+1} Complete | Average MSE Loss: {epoch_avg_loss:.6f} ---")
+        epoch_train_loss = running_train_loss / train_steps
+
+        # --- VALIDATION PHASE ---
+        #model.eval()
+        #running_val_loss = 0.0
+        #val_steps = 0
         
-        checkpoint_path = os.path.join(config.checkpoint_dir, f"inr_gpt_epoch_{epoch+1}.pt")
-        torch.save({
-            'epoch': epoch + 1,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'loss': epoch_avg_loss,
-            'config': config_data
-        }, checkpoint_path)
-        print(f"Saved architectural snapshot to {checkpoint_path}\n")
+        #with torch.no_grad():
+        #    for batch in val_loader:
+        #        x_neurons = batch['x_neurons'].to(device)
+        #        layer_ids = batch['layer_ids'].to(device)
+        #        target_layer_ids = batch['target_layer_ids'].to(device)
+        #        y_neurons = batch['y_neurons'].to(device)
+                
+        #        predictions = model(x_neurons, layer_ids, target_layer_ids)
+        #        loss = F.mse_loss(predictions, y_neurons)
+                
+        #        running_val_loss += loss.item()
+        #        val_steps += 1
+                
+        #epoch_val_loss = running_val_loss / val_steps
+        #print(f"--- Epoch {epoch+1} Complete | Train Loss: {epoch_train_loss:.6f} | Val Loss: {epoch_val_loss:.6f} ---")
+        
+    # 6. Save Final Checkpoint
+    checkpoint_path = os.path.join(config.checkpoint_dir, f"inr_gpt.pt")
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'config' : config
+    }, checkpoint_path)
 
     print("Training phase successfully completed!")
 

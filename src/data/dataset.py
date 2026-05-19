@@ -16,13 +16,10 @@ class INRDataset(Dataset):
     def __getitem__(self, idx):
         file_path = self.split_dir / self.file_list[idx]
         data = torch.load(file_path, map_location='cpu')
-        
-        # Keeping neurons exactly as they are: a list of 65 tensors
-        # Layer 1 shapes: (3,) | Layer 2 & 3 shapes: (33,)
-        neurons = data['neurons'] 
-        layer_ids = data['layer_ids'] # Shape: (65,)
 
-        # Shift the full 64/65 sequence by 1 for causal learning
+        neurons = data['neurons'] 
+        layer_ids = data['layer_ids'] 
+
         x_neurons = neurons[:-1]
         y_neurons = neurons[1:]
         

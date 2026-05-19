@@ -10,7 +10,7 @@ class INRDataProcessor:
         self, 
         input_root: str = "data/mnist-inrs", 
         output_root: str = "data/processed_inrs", 
-        digitization_levels: int = 100
+        digitization_levels: int = 100000
     ):
         self.input_root = Path(input_root)
         self.output_root = Path(output_root)
@@ -32,41 +32,17 @@ class INRDataProcessor:
 
             for l_idx, layer in enumerate(tokenized_layers):
                 for neuron in layer:
-                    digitized_neuron = self.discretize(neuron)
-                    flattened_neurons.append(digitized_neuron)
+                    discretize_neuron = self.discretize(neuron) 
+                    flattened_neurons.append(discretize_neuron)
                     layer_ids.append(l_idx)
 
             save_name = file_path.parent.parent.name + ".pt"
             torch.save({
-                'neurons': flattened_neurons, 
+                'neurons': torch.stack(flattened_neurons, dim=0), 
                 'layer_ids': torch.tensor(layer_ids, dtype=torch.long)
             }, destination / save_name)
         except Exception as e:
             print(f"Error processing {file_path.name}: {e}")
-
-    def get_reconstruction_tensors(self, pt_path, device='cpu'):
-        """
-        Loads a processed .pt file and returns (weights, biases) 
-        formatted specifically for the functional BatchSiren forward pass.
-        """
-        data = torch.load(pt_path, map_location=device)
-        neurons = data['neurons']
-        layer_ids = data['layer_ids']
-
-        unique_layers = torch.unique(layer_ids).tolist()
-        
-        reconstructed_weights = []
-        reconstructed_biases = []
-
-        for l_id in unique_layers:
-            indices = (layer_ids == l_id).nonzero(as_tuple=True)[0] 
-            layer_matrix = torch.stack([neurons[i] for i in indices])
-            w = layer_matrix[:, :-1].unsqueeze(0) 
-            b = layer_matrix[:, -1].unsqueeze(0)
-            reconstructed_weights.append(w.to(device))
-            reconstructed_biases.append(b.to(device))
-            
-        return reconstructed_weights, reconstructed_biases
     
     def reconstruct_state_dict(self, processed_path: Union[str, Path]) -> Dict[str, torch.Tensor]:
         """
@@ -74,14 +50,14 @@ class INRDataProcessor:
         standard model state_dict (weights and biases).
         """
         data = torch.load(processed_path, map_location='cpu')
-        neurons = data['neurons']
-        layer_ids = data['layer_ids']
-
+        neurons = data['neurons']      
+        layer_ids = data['layer_ids']  
         unique_layers = torch.unique(layer_ids).tolist()
         layers_reconstructed = []
         
         for l_id in unique_layers:
-            layer_neurons = [neurons[i] for i, val in enumerate(layer_ids) if val == l_id]
+            layer_matrix = neurons[layer_ids == l_id]
+            layer_neurons = list(torch.unbind(layer_matrix, dim=0))         
             layers_reconstructed.append(layer_neurons)
 
         state_dict = self.tokenizer.detokenize(layers_reconstructed)       
