@@ -4,11 +4,13 @@ num_layers: 3
 n_head: 3
 n_embd: 15
 bias: true
-dropout: 0.1
+dropout: 0
 
 # Training Settings
 batch_size: 1
-learning_rate: 0.0005  
+block_size: 1185
+vocab_size: 201
+learning_rate: 0.005 
 max_epochs: 1000
 log_interval: 20
 checkpoint_dir: "checkpoints"

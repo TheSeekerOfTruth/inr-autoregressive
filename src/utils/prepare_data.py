@@ -1,44 +1,49 @@
-import os
 import torch
 from tqdm import tqdm
 from pathlib import Path
-from typing import List, Dict, Any, Union
+from typing import Dict, Union
 from src.tokenizer import INRTokenizer
+from src.discretizer import INRDiscretizer
 
 class INRDataProcessor:
+    
     def __init__(
         self, 
         input_root: str = "data/mnist-inrs", 
         output_root: str = "data/processed_inrs", 
-        digitization_levels: int = 100000
+        n_bins: int = 200,
     ):
         self.input_root = Path(input_root)
         self.output_root = Path(output_root)
-        self.levels = digitization_levels
-        self.tokenizer =    INRTokenizer()
-
-    def discretize(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Applies rounding to fixed levels."""
-        return torch.round(tensor * self.levels) / self.levels
+        self.tokenizer = INRTokenizer(token = "weight")
+        self.discretizer = INRDiscretizer(n_bins)
 
     def _process_single_file(self, file_path: Path, destination: Path):
         """Standard Forward: .pth -> .pt (flattened & digitized)"""
         try:
             state_dict = torch.load(file_path, map_location='cpu')
             tokenized_layers = self.tokenizer.tokenize(state_dict)
+            discretized_layers = self.discretizer.discretize_tokens(tokenized_layers)
+            if(self.tokenizer.token == "neuron"):
+                flattened_layers = [token for layer in discretized_layers for token in layer]
+            else:
+                flattened_layers = torch.cat([token.flatten() for layer in discretized_layers for token in layer], dim = 0)
 
-            flattened_neurons = []
             layer_ids = []
-
             for l_idx, layer in enumerate(tokenized_layers):
-                for neuron in layer:
-                    discretize_neuron = self.discretize(neuron) 
-                    flattened_neurons.append(discretize_neuron)
-                    layer_ids.append(l_idx)
+                if self.tokenizer.token == "neuron":
+                    element_count = len(layer)
+                else:
+                    element_count = layer[0].numel()
+                layer_ids.extend([l_idx] * element_count)
 
             save_name = file_path.parent.parent.name + ".pt"
+            if(self.tokenizer.token == "neuron"):
+                data = torch.stack(flattened_layers, dim=0)
+            else:
+                data = flattened_layers
             torch.save({
-                'neurons': torch.stack(flattened_neurons, dim=0), 
+                'tokens': data, 
                 'layer_ids': torch.tensor(layer_ids, dtype=torch.long)
             }, destination / save_name)
         except Exception as e:
@@ -50,14 +55,19 @@ class INRDataProcessor:
         standard model state_dict (weights and biases).
         """
         data = torch.load(processed_path, map_location='cpu')
-        neurons = data['neurons']      
+        tokens = data['tokens']      
         layer_ids = data['layer_ids']  
         unique_layers = torch.unique(layer_ids).tolist()
         layers_reconstructed = []
         
         for l_id in unique_layers:
-            layer_matrix = neurons[layer_ids == l_id]
-            layer_neurons = list(torch.unbind(layer_matrix, dim=0))         
+            mask = (layer_ids == l_id).view(-1)
+            flat_tokens = tokens.view(-1)
+            layer_matrix = flat_tokens[mask]
+            if self.tokenizer.token == "neuron":
+                layer_neurons = list(torch.unbind(layer_matrix, dim=0))         
+            else:
+                layer_neurons = [layer_matrix]         
             layers_reconstructed.append(layer_neurons)
 
         state_dict = self.tokenizer.detokenize(layers_reconstructed)       

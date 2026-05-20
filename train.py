@@ -74,14 +74,8 @@ def main():
     # 4. Initialize Model and Optimizer
     print("Initializing INRGPT engine...")
     model = INRGPT(config).to(device)
-    
-    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Model parameters tracked: {num_params:,}")
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=config.learning_rate, 
-        betas=(0.9, 0.95), weight_decay=0.1
-    )
+    optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=config.learning_rate, betas=(0.9,0.95), device_type=device)
 
     # Dictionary history tracker for our visual Jupyter Notebook dashboard
     history_logs = []
@@ -100,15 +94,10 @@ def main():
             optimizer.zero_grad(set_to_none=True)
             
             # Move everything cleanly to the active hardware device
-            x_neurons = batch['x_neurons'].to(device)
-            layer_ids = batch['layer_ids'].to(device)
-            target_layer_ids = batch['target_layer_ids'].to(device)
-            y_neurons = batch['y_neurons'].to(device)
+            x_tokens = batch['x_tokens'].to(device)
+            y_tokens = batch['y_tokens'].to(device)
             
-            predictions = model(x_neurons, layer_ids, target_layer_ids)
-            
-            loss = F.mse_loss(predictions, y_neurons)
-            
+            _, loss = model(x_tokens, y_tokens)            
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
