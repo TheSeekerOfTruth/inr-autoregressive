@@ -5,3 +5,5 @@ __pycache__/
 /external/
 .venv/
 venv/
+*.DS_Store
+*model_final.pth
