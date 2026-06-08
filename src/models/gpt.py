@@ -60,6 +60,9 @@ class INRGPT(nn.Module):
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
+            layer_pe = nn.Embedding(3, config.n_embd),
+            neuron_pe = nn.Embedding(32, config.n_embd),
+            weight_pe = nn.Embedding(33, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = nn.LayerNorm(config.n_embd, bias=config.bias),
@@ -174,7 +177,7 @@ class INRGPT(nn.Module):
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
-        x = self.transformer.drop(tok_emb + pos_emb)
+        x = self.transformer.drop(tok_emb + pos_emb)#+ layer_emb + neuron_emb + weight_emb
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)

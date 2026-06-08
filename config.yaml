@@ -1,16 +1,16 @@
 # Model Architecture
-n_layer: 6
+n_layer: 8
 num_layers: 3
-n_head: 3
-n_embd: 15
+n_head: 15
+n_embd: 150
 bias: true
-dropout: 0
+dropout: 0.2
 
 # Training Settings
-batch_size: 1
-block_size: 1185
+batch_size: 256
+block_size: 1250
 vocab_size: 201
-learning_rate: 0.005 
-max_epochs: 1000
+learning_rate: 0.0001
+max_epochs: 100
 log_interval: 20
 checkpoint_dir: "checkpoints"
