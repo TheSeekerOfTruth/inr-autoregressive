@@ -1,34 +1,66 @@
-# we use this rather crude method, because it worked better than using quantiles.
-
 import torch
 import numpy as np
 from sklearn.cluster import KMeans
+import numpy as np
 
 
-def bin_quantize_tensor(x: torch.Tensor, n_bins: int) -> torch.Tensor:
-    """Discretize x to n_bins evenly-spaced levels in [-0.5, 0.5]."""
-    if n_bins == 1:
-        return torch.zeros_like(x)
-    idx = ((x + 0.5) * (n_bins - 1)).round().clamp(0, n_bins - 1)
-    return idx / (n_bins - 1) - 0.5
+class INRDiscretizer:
+    def __init__(self, mode='uniform', n_bins=50, k=50, min_val=-0.5, max_val=0.5, codebooks=None):
+        self.mode = mode
+        self.n_bins = n_bins
+        self.k = k
+        self.min_val = min_val
+        self.max_val = max_val
+        self.range = max_val - min_val
+        self.codebooks = codebooks
 
+    def discretize(self, list_of_neuron_tokens: list) -> list:
+        """Entry point for both discretization modes."""
+        if self.mode == 'uniform':
+            return [[self._quantize_uniform(t) for t in layer] for layer in list_of_neuron_tokens]
+        else:
+            return [[self._quantize_kmeans(t) for t in layer] for layer in list_of_neuron_tokens]
 
-def discretize(neuron_tokens: list, n_bins: int = 100) -> list:
-    """
-    Quantize tokenizer output to n_bins levels in [-0.5, 0.5].
+    def _quantize_uniform(self, x: torch.Tensor) -> torch.Tensor:
+        normalized = (x - self.min_val) / self.range
+        idx = (normalized * (self.n_bins - 1)).round().clamp(0, self.n_bins - 1)
+        return idx.long()
 
-    Args:
-        neuron_tokens: output of INRTokenizer.tokenize — List[List[Tensor]]
-        n_bins: number of discrete levels (default 100)
+    def _quantize_kmeans(self, token: torch.Tensor) -> torch.Tensor:
+        dim = token.shape[0]
+        # Calculate L2 distance to centroids and take argmin
+        dist = torch.norm(self.codebooks[dim] - token, dim=1)
+        if(dim == 3):
+            return torch.argmin(dist).long()
+        else:
+            return torch.argmin(dist).long() + self.codebooks[dim].size(0)
 
-    Returns:
-        Same structure with quantized tensors.
-    """
-    return [
-        [bin_quantize_tensor(token, n_bins) for token in layer]
-        for layer in neuron_tokens
-    ]
+    def decode(self, indices: torch.Tensor) -> torch.Tensor:
+            """
+            Maps global indices back to continuous tensors.
+            indices: 1D Tensor of global IDs.
+            """
+            if self.mode == 'uniform':
+                vocab = self.get_vocabulary()
+                return vocab[indices]
 
+            offset = self.codebooks[3].size(0)
+            
+            max_dim = max(dim for dim in self.codebooks.keys())
+            output = torch.zeros(indices.size(0), max_dim)
+            print(output.shape)
+            mask_3 = indices < offset
+            output[mask_3, :3] = self.codebooks[3][indices[mask_3]]
+            mask_33 = ~mask_3
+            relative_indices = indices[mask_33] - offset
+            output[mask_33, :33] = self.codebooks[33][relative_indices]
+
+            return output
+
+    def get_vocabulary(self) -> torch.Tensor:
+        """Returns the uniform codebook."""
+        steps = torch.arange(0, self.n_bins, dtype=torch.float32)
+        return (steps / (self.n_bins - 1)) * self.range + self.min_val
 
 def kmeans_discretize_zero_padding(list_of_neuron_tokens: list, k: int = 1000) -> list:
     """
