@@ -16,7 +16,7 @@ class PositionalEncoding(nn.Module):
         return torch.cat(out, dim=-1)
     
 class mnistINR(nn.Module):
-    def __init__(self, nb_layers=2, nb_neurons=16, L=4):
+    def __init__(self, nb_layers=2, nb_neurons=8, L=4):
         super().__init__()
         self.pos_encoder = PositionalEncoding(L=L)
 
