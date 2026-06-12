@@ -26,7 +26,7 @@ for i in range(num_experiments):
     
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.MSELoss()
-    coords, target, label = mnist_dataset[i]
+    coords, target, label = mnist_dataset[i+54000]
     coords = coords.to(device)
     target = target.to(device)
     print(f"EXPERIMENT: Sample #{i} | Digit: {label}")
