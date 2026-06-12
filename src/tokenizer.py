@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from collections import OrderedDict
 
 class INRTokenizer:
-    def __init__(self, token = "neuron", sort = True):
+    def __init__(self, token = "neuron", sort = False):
         self.token = token
         self.sort = sort
 

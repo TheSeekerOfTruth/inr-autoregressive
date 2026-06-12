@@ -8,7 +8,7 @@ from sklearn.cluster import KMeans, MiniBatchKMeans
 from collections import defaultdict
 import numpy as np
 
-def fit(list_of_neuron_tokens: list, save_path: str = "quantizer_data.pt", k: int = 200):
+def fit(list_of_neuron_tokens: list, save_path: str = "quantizer_data.pt", k: int = 5000):
     groups = defaultdict(list)
     codebooks = {}
     
@@ -54,7 +54,7 @@ class INRDataProcessor:
         self, 
         input_root: str = "data/checkpoints-rec/all_inrs_eight_neurons", 
         output_root: str = "data/processed_inrs", 
-        n_bins: int = 200,
+        n_bins: int = 5000,
         mode: str = "uniform",
         codebook_path: Path = "quantizer_data.pt"
     ):

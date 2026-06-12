@@ -5,7 +5,7 @@ import numpy as np
 
 
 class INRDiscretizer:
-    def __init__(self, mode='uniform', n_bins=50, k=50, min_val=-0.5, max_val=0.5, codebooks=None):
+    def __init__(self, mode='uniform', n_bins=50, k=50, min_val=-5, max_val=5, codebooks=None):
         self.mode = mode
         self.n_bins = n_bins
         self.k = k
@@ -38,7 +38,7 @@ class INRDiscretizer:
             indices: 1D Tensor of global IDs.
             """
             if(self.mode=="uniform"):
-                return self.get_vocabulary()[indices[indices != 201]]
+                return self.get_vocabulary()[indices[indices != 5001]]
             else:
                 return self.codebooks[9][indices]
 
