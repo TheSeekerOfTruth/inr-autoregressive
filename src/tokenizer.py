@@ -18,7 +18,7 @@ class INRTokenizer:
             # 1. Canonicalize between Layer 0 and Layer 1
             w0 = aligned['seq.0.weight']  # Shape: (32, 2)
             b0 = aligned['seq.0.bias']    # Shape: (32,)
-            w1 = aligned['seq.1.weight']  # Shape: (32, 32)
+            w1 = aligned['seq.2.weight']  # Shape: (32, 32)
             
             # Sort Layer 0 neurons by their row magnitude (L2-norm)
             norm0 = torch.norm(w0, p=2, dim=1)
@@ -27,21 +27,21 @@ class INRTokenizer:
             aligned['seq.0.weight'] = w0[indices0]
             aligned['seq.0.bias'] = b0[indices0]
             # Crucial: Permute the inputs (columns) of Layer 1 to match!
-            aligned['seq.1.weight'] = w1[:, indices0]
+            aligned['seq.2.weight'] = w1[:, indices0]
 
             # 2. Canonicalize between Layer 1 and Layer 2
-            w1_aligned = aligned['seq.1.weight'] # Shape: (32, 32)
-            b1 = aligned['seq.1.bias']           # Shape: (32,)
-            w2 = aligned['seq.2.weight']         # Shape: (1, 32)
+            w1_aligned = aligned['seq.2.weight'].clone() # Shape: (32, 32)
+            b1 = aligned['seq.2.bias']           # Shape: (32,)
+            w2 = aligned['seq.4.weight']         # Shape: (1, 32)
             
             # Sort Layer 1 neurons by their row magnitude
             norm1 = torch.norm(w1_aligned, p=2, dim=1)
             indices1 = torch.argsort(norm1)
             
-            aligned['seq.1.weight'] = w1_aligned[indices1]
-            aligned['seq.1.bias'] = b1[indices1]
+            aligned['seq.2.weight'] = w1_aligned[indices1]
+            aligned['seq.2.bias'] = b1[indices1]
             # Crucial: Permute the inputs (columns) of Layer 2 to match!
-            aligned['seq.2.weight'] = w2[:, indices1]
+            aligned['seq.4.weight'] = w2[:, indices1]
             
             return aligned
     
@@ -77,40 +77,17 @@ class INRTokenizer:
         """
         state_dict = OrderedDict()
         
-        for i, layer_tokens in enumerate(list_of_layers):
-            
+        for i, layer_tokens in enumerate(list_of_layers):          
             if(self.token == "neuron"):
-                if(i == 0):
-                    layer_as_tensor = torch.stack(layer_tokens, dim=0).reshape(32, 33) 
-                    w = layer_as_tensor[:, :2]
-                    b = layer_as_tensor[:, 2]
-                elif(i == 1):
-                    layer_as_tensor = torch.stack(layer_tokens, dim=0).reshape(32, 33) 
-                    w = layer_as_tensor[:, :-1]
-                    b = layer_as_tensor[:, -1]
-                else:
-                    layer_as_tensor = torch.stack(layer_tokens, dim=0).reshape(1, 33) 
-                    w = layer_as_tensor[:, :-1]
-                    b = layer_as_tensor[:, -1]
-            
+                layer_as_tensor = torch.stack(layer_tokens, dim=0) 
+                w = layer_as_tensor[:, :-1]
+                b = layer_as_tensor[:, -1]
             else:
-                big_layer_tensor = layer_tokens[0]
-                
-                if(i == 0):
-                    layer_as_tensor = big_layer_tensor.reshape(32, 3)
-                    w = layer_as_tensor[:, :2]
-                    b = layer_as_tensor[:, 2]
-                elif(i == 1):
-                    layer_as_tensor = big_layer_tensor.reshape(32, 33)
-                    w = layer_as_tensor[:, :-1]
-                    b = layer_as_tensor[:, -1]
-                else:
-                    layer_as_tensor = big_layer_tensor.reshape(1, 33)
-                    w = layer_as_tensor[:, :-1]
-                    b = layer_as_tensor[:, -1]
-            
-            state_dict[f'seq.{i}.weight'] = w
-            state_dict[f'seq.{i}.bias'] = b
+                layer_as_tensor = torch.stack(layer_tokens, dim=0).reshape(-1,9)
+                w = layer_as_tensor[:, :-1]
+                b = layer_as_tensor[:, -1]
+            state_dict[f'seq.{2 * i}.weight'] = w
+            state_dict[f'seq.{2 * i}.bias'] = b
             
         return state_dict
     

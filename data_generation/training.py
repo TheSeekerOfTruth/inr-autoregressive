@@ -18,7 +18,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
+from concurrent.futures import ProcessPoolExecutor
 from model import mnistINR
 
 
@@ -207,3 +207,5 @@ def reconstruct(model, coords, side=28, device=None):
     with torch.no_grad():
         prediction = model(coords.to(device)).cpu().reshape(side, side)
     return prediction
+
+
