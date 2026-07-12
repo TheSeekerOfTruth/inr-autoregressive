@@ -1,10 +1,8 @@
 .vscode/
 __pycache__/
 *.py[cod]
-/data/
 /external/
 /runs/
-*.png
 .venv/
 venv/
 
