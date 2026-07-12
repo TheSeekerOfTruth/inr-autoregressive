@@ -2,132 +2,118 @@ import torch
 from tqdm import tqdm
 from pathlib import Path
 from typing import Dict, Union
-from src.tokenizer import INRTokenizer
-from src.discretizer import INRDiscretizer
-from sklearn.cluster import KMeans, MiniBatchKMeans
-from collections import defaultdict
-import numpy as np
+from src.utils.tokenizer import INRTokenizer
+from src.utils.discretizer import INRDiscretizer
 
-def fit(list_of_neuron_tokens: list, save_path: str = "quantizer_data.pt", k: int = 5000):
-    groups = defaultdict(list)
-    codebooks = {}
-    
-    print("--- Loading and grouping tokens ---")
-    for neuron_tokens in tqdm(list_of_neuron_tokens, desc="Grouping tokens by dimension"):
-        for layer in neuron_tokens:
-            for token in layer:
-                groups[token.shape[0]].append(token.numpy())
-
-    print("--- Starting KMeans fitting ---")
-    for dim, entries in groups.items():
-        num_samples = len(entries)
-        print(f"Fitting KMeans for dimension {dim} (Total samples: {num_samples})...")
-        
-        k_eff = min(k, num_samples)
-        data = np.stack(entries)
-        
-        if num_samples > 10000:
-            print(f"  -> Large dataset detected. Using MiniBatchKMeans for speed.")
-            km = MiniBatchKMeans(
-                n_clusters=k_eff, 
-                batch_size=max(2048, num_samples // 10),
-                random_state=0,
-                max_iter=100
-            ).fit(data)
-        else:
-            km = KMeans(
-                n_clusters=k_eff, 
-                n_init="auto", 
-                random_state=0
-            ).fit(data)
-        # ---------------------------------
-        
-        codebooks[dim] = torch.tensor(km.cluster_centers_, dtype=torch.float32)
-        print(f"Finished fitting dimension {dim}.")
-
-    torch.save({'codebooks': codebooks}, save_path)
-    print(f"Quantizer data saved to {save_path}")
-
-class INRDataProcessor:
-    
+class INRDataProcessor:   
     def __init__(
         self, 
-        input_root: str = "data/checkpoints-rec/all_inrs_eight_neurons", 
+        input_root: str = "data/mnist-inrs-relus/all_inrs_eight_neurons", 
         output_root: str = "data/processed_inrs", 
-        n_bins: int = 5000,
-        mode: str = "uniform",
-        codebook_path: Path = "quantizer_data.pt"
+        n_bins: int = 150,
+        mode: str = "quantile",
+        token: str = "weight"
     ):
         self.input_root = Path(input_root)
         self.output_root = Path(output_root)
-        self.tokenizer = INRTokenizer(token = "weight")
-        if(codebook_path == None):
-            self.discretizer = INRDiscretizer(mode=mode, n_bins=n_bins)
-        else:
-            self.discretizer = INRDiscretizer(mode=mode, n_bins=n_bins,  codebooks=torch.load(codebook_path)['codebooks'])
+        self.tokenizer = INRTokenizer(token = token)
+        self.discretizer = INRDiscretizer(mode=mode, n_bins=n_bins, input_path=Path(input_root))
 
     def _process_single_file(self, file_path: Path, destination: Path):
-        """Standard Forward: .pth -> .pt (flattened & digitized)"""
-        try:
-            state_dict = torch.load(file_path, map_location='cpu')
-            tokenized_layers = self.tokenizer.tokenize(state_dict)
-            discretized_layers = self.discretizer.discretize(tokenized_layers)
-            delimiter = self.discretizer.n_bins + 1
+        """Standard Forward: .pth -> .pt (flattened & digitized)"""        
+        state_dict = torch.load(file_path, map_location='cpu')
+        tokenized_layers = self.tokenizer.tokenize(state_dict)
+        discretized_layers = self.discretizer.discretize(tokenized_layers)
+        delimiter = self.discretizer.n_bins + 1
 
-
-            if(self.tokenizer.token == "neuron"):
-                flattened_layers = [token for layer in discretized_layers for token in layer]
+        if(self.tokenizer.token == "neuron"):
+            flattened_layers = [token for layer in discretized_layers for token in layer]
+        else:
+            all_elements = []
+            dim = 9
+            if isinstance(discretized_layers, torch.Tensor):
+                current_idx = 0
+                for layer in tokenized_layers:
+                    for token in layer:
+                        num_elements = token.numel()
+                        quantized_token = discretized_layers[current_idx : current_idx + num_elements]
+                        current_idx += num_elements                      
+                        neurons = num_elements / dim
+                        all_elements.append(torch.cat([
+                            quantized_token.view(-1, dim),
+                            torch.tensor([[delimiter]], dtype=torch.long).repeat(int(neurons), 1)
+                        ], dim=1).flatten())
             else:
-                all_elements = []
-                dim = 9
-                # 1. Unpack the outer list (layers)
-                for idx, layer in enumerate(discretized_layers):
-                    # 2. Unpack the inner list (neurons)
+                for _, layer in enumerate(discretized_layers):
                     for token in layer:
                         neurons = token.shape[0] / dim
                         all_elements.append(torch.cat([token.view(-1,dim),torch.tensor([[delimiter]], dtype=torch.long).repeat(int(neurons),1)], dim=1).flatten())
 
-                flattened_layers = torch.cat(all_elements, dim=0)
-            layer_ids = []
-            for l_idx, layer in enumerate(tokenized_layers):
-                if self.tokenizer.token == "neuron":
-                    element_count = len(layer)
-                else:
-                    element_count = layer[0].numel()
-                layer_ids.extend([l_idx] * element_count)
-
-            save_name = file_path.parent.name + "_" + file_path.stem + ".pt"
-            if(self.tokenizer.token == "neuron"):
-                data = torch.stack(flattened_layers, dim=0)
+            flattened_layers = torch.cat(all_elements, dim=0)        
+        layer_ids = []
+        for l_idx, layer in enumerate(tokenized_layers):
+            if self.tokenizer.token == "neuron":
+                element_count = len(layer)
             else:
-                data = flattened_layers
-            torch.save({
-                'tokens': data, 
-                'layer_ids': torch.tensor(layer_ids, dtype=torch.long)
-            }, destination / save_name)
-        except Exception as e:
-            print(f"Error processing {file_path.name}: {e}")
-    
+                element_count = layer[0].numel()
+            layer_ids.extend([l_idx] * element_count)
+
+        save_name = file_path.parent.name + "_" + file_path.stem + ".pt"
+        if(self.tokenizer.token == "neuron"):
+            data = torch.stack(flattened_layers, dim=0)
+        else:
+            data = flattened_layers
+        torch.save({
+            'tokens': data, 
+            'layer_ids': torch.tensor(layer_ids, dtype=torch.long)
+        }, destination / save_name)
+
     def reconstruct_state_dict(self, processed_path: Union[str, Path]) -> Dict[str, torch.Tensor]:
         """
-        Takes a processed .pt file and converts it back into a 
-        standard model state_dict (weights and biases).
+        Takes a processed .pt file, strips out autoregressive delimiters, 
+        and converts it back into a standard model state_dict.
         """
         data = torch.load(processed_path, map_location='cpu')
-        tokens = data['tokens']
-        tokens = self.discretizer.decode(tokens)
+        tokens = data['tokens']      
         layer_ids = data['layer_ids']  
+        
+        delimiter_id = self.discretizer.n_bins + 1
+        valid_token_mask = (tokens != delimiter_id)
+        
+        # Filter tokens down to just the actual weights/biases
+        clean_tokens = tokens[valid_token_mask]
+        
+        # 2. Decode the filtered continuous data
+        print("\n" + "="*40)
+        print("🔍 DEBUGGING: TOKENS & DECODED WEIGHTS")
+        print("="*40)
+        
+        # 1. Print Tokens Info
+        print(f"🔹 Tokens:\n{tokens}")
+        print(f"📐 Tokens Shape: {list(tokens.shape)}\n")
+        print("-" * 30)
+        
+        # 2. Decode and Print Weights Info
+        decoded_weights = self.discretizer.decode(clean_tokens)
+        print(f"🔸 Decoded Weights:\n{decoded_weights}")
+        print(f"📐 Decoded Weights Shape: {list(decoded_weights.shape)}")
+        
+        print("="*40 + "\n")
         unique_layers = torch.unique(layer_ids).tolist()
         layers_reconstructed = []
         
+        # 3. Slice up the layer matrices matching layer_ids exactly
         for l_id in unique_layers:
             mask = (layer_ids == l_id).view(-1)
-            layer_matrix = tokens[mask]
+            layer_matrix = decoded_weights[mask]
+            
             if self.tokenizer.token == "neuron":
                 layer_neurons = list(torch.unbind(layer_matrix, dim=0))         
             else:
                 layer_neurons = [layer_matrix]         
+                
             layers_reconstructed.append(layer_neurons)
+            
         state_dict = self.tokenizer.detokenize(layers_reconstructed)       
         return state_dict
 
@@ -140,22 +126,15 @@ class INRDataProcessor:
         torch.save(state_dict, output_path)
         print(f"Successfully reconstructed checkpoint to: {output_path}")
 
-
     def run(self):
         """Process all train/test files."""
         src = self.input_root 
         dst = self.output_root
         dst.mkdir(parents=True, exist_ok=True)
         files = list(src.rglob("*.pth"))
-        for f in tqdm(files, desc=f"Processing files"):
+        for f in tqdm(files, desc="Processing files"):
             self._process_single_file(f, dst)
 
 if __name__ == "__main__":     
-    """    list_for_kmeans = []
-    tokenizer = INRTokenizer(token = "neuron")   
-    for file in tqdm(list(Path("data/checkpoints-rec").rglob("*.pth"))):
-        state_dict = torch.load(file, map_location='cpu')
-        list_for_kmeans.append(tokenizer.tokenize(state_dict))
-    fit(list_for_kmeans, k=100)"""
-    processor = INRDataProcessor(codebook_path=None)
+    processor = INRDataProcessor()
     processor.run()

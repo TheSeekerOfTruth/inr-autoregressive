@@ -1,16 +1,17 @@
 # Model Architecture
-n_layer: 8
-num_layers: 3
-n_head: 15
-n_embd: 150
+
+n_layer: 8 # Number of Tranformer blocks
+num_layers: 3 # This is a fix parameter defining gow many layers the INR has
+n_head: 20 # Number of attention heads
+n_embd: 200 # embedding dimension
 bias: true
 dropout: 0.2
 
 # Training Settings
-batch_size: 256
-block_size: 1250
-vocab_size: 201
-learning_rate: 0.0001
-max_epochs: 100
-log_interval: 20
+batch_size: 512
+block_size: 170
+vocab_size: 152
+learning_rate: 0.01
+max_epochs: 20
+log_interval: 100
 checkpoint_dir: "checkpoints"
